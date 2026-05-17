@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import { toast } from "sonner"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -84,34 +85,41 @@ export function SongListClient({ songs }: { songs: Song[] }) {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {filtered.map((song) => (
-            <Card key={song.id} className="overflow-hidden">
-              {song.album_cover ? (
-                <img
-                  src={song.album_cover}
-                  alt={`${song.title} — okładka`}
-                  className="aspect-square w-full object-cover"
-                />
-              ) : (
-                <div className="flex aspect-square w-full items-center justify-center bg-muted">
-                  <Music2 className="size-12 text-muted-foreground" />
-                </div>
-              )}
-              <CardContent className="p-3">
-                <p className="font-semibold leading-tight">{song.title}</p>
-                <p className="text-sm text-muted-foreground">{song.artist}</p>
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {song.year && (
-                    <Badge variant="secondary">{song.year}</Badge>
-                  )}
-                  <Badge variant="outline">{song.added_by}</Badge>
-                </div>
-                {song.comment && (
-                  <p className="mt-2 line-clamp-3 text-xs text-muted-foreground">
-                    &ldquo;{song.comment}&rdquo;
-                  </p>
+            <Link
+              key={song.id}
+              href={`/preview?song=${song.id}`}
+              className="group focus:outline-none"
+              title="Podgląd karty"
+            >
+              <Card className="overflow-hidden transition-shadow group-hover:shadow-lg group-focus-visible:ring-2 group-focus-visible:ring-ring">
+                {song.album_cover ? (
+                  <img
+                    src={song.album_cover}
+                    alt={`${song.title} — okładka`}
+                    className="aspect-square w-full object-cover transition-transform group-hover:scale-[1.02]"
+                  />
+                ) : (
+                  <div className="flex aspect-square w-full items-center justify-center bg-muted">
+                    <Music2 className="size-12 text-muted-foreground" />
+                  </div>
                 )}
-              </CardContent>
-            </Card>
+                <CardContent className="p-3">
+                  <p className="font-semibold leading-tight">{song.title}</p>
+                  <p className="text-sm text-muted-foreground">{song.artist}</p>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {song.year && (
+                      <Badge variant="secondary">{song.year}</Badge>
+                    )}
+                    <Badge variant="outline">{song.added_by}</Badge>
+                  </div>
+                  {song.comment && (
+                    <p className="mt-2 line-clamp-3 text-xs text-muted-foreground">
+                      &ldquo;{song.comment}&rdquo;
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            </Link>
           ))}
         </div>
       )}

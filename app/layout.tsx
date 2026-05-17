@@ -1,4 +1,4 @@
-import { Geist_Mono, Inter } from "next/font/google"
+import { Geist_Mono, Inter, Playfair_Display } from "next/font/google"
 import type { Metadata } from "next"
 
 import "./globals.css"
@@ -7,7 +7,17 @@ import { Nav } from "@/components/nav"
 import { Toaster } from "@/components/ui/sonner"
 import { cn } from "@/lib/utils"
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-sans" })
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-sans",
+  weight: ["100", "200", "300", "400", "500", "600", "700", "800", "900"],
+})
+
+const playfair = Playfair_Display({
+  subsets: ["latin"],
+  variable: "--font-playfair",
+  weight: ["400", "500", "600", "700", "800", "900"],
+})
 
 const fontMono = Geist_Mono({
   subsets: ["latin"],
@@ -28,7 +38,13 @@ export default function RootLayout({
     <html
       lang="pl"
       suppressHydrationWarning
-      className={cn("antialiased", fontMono.variable, "font-sans", inter.variable)}
+      className={cn(
+        "antialiased",
+        fontMono.variable,
+        "font-sans",
+        inter.variable,
+        playfair.variable,
+      )}
     >
       <body>
         <ThemeProvider>

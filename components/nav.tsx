@@ -38,6 +38,17 @@ export function Nav() {
           >
             Lista piosenek
           </Link>
+          <Link
+            href="/preview"
+            className={cn(
+              "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+              pathname === "/preview"
+                ? "bg-muted text-foreground"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground"
+            )}
+          >
+            Podgląd karty
+          </Link>
         </nav>
       </div>
     </header>
