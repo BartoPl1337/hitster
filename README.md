@@ -1,21 +1,24 @@
-# Next.js template
+# 🎵 Hitster Song Collector
 
-This is a Next.js template with shadcn/ui.
+Aplikacja do zbierania propozycji piosenek przed sesją gry [Hitster](https://www.hitster.game/). Każdy uczestnik może wyszukać swój ulubiony utwór na Spotify i dodać go do wspólnej listy — zanim zasiądziecie do gry.
 
-## Adding components
+## Jak to działa
 
-To add components to your app, run the following command:
+1. Wchodzisz na stronę i wpisujesz swoje imię / nick
+2. Wyszukujesz piosenkę po nazwie lub wykonawcy — wyniki pojawiają się na bieżąco z okładkami z Spotify
+3. Wybierasz utwór i opcjonalnie dodajesz krótki komentarz (np. „klasyk z dzieciństwa")
+4. Klikasz **Dodaj piosenkę** — trafia ona do wspólnej listy
+5. Na stronie **Lista piosenek** wszyscy widzą co zostało dodane, mogą filtrować i skopiować całą listę do schowka
 
-```bash
-npx shadcn@latest add button
-```
+Aplikacja blokuje duplikaty — ta sama piosenka może pojawić się na liście tylko raz.
 
-This will place the ui components in the `components` directory.
+## Tech stack
 
-## Using components
-
-To use the components in your app, import them as follows:
-
-```tsx
-import { Button } from "@/components/ui/button";
-```
+| Warstwa | Technologia |
+|---|---|
+| Framework | Next.js 14 (App Router) |
+| Język | TypeScript |
+| UI | shadcn/ui + Tailwind CSS |
+| Baza danych | Supabase (PostgreSQL) |
+| Muzyka | Spotify Web API |
+| Hosting | Vercel |
