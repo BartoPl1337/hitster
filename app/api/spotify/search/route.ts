@@ -55,13 +55,29 @@ export async function GET(request: NextRequest) {
   try {
     const token = await getAccessToken()
 
-    const res = await fetch(
-      `https://api.spotify.com/v1/search?type=track&limit=8&q=${encodeURIComponent(query)}`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-        next: { revalidate: 60 },
-      }
-    )
+    const searchUrl = `https://api.spotify.com/v1/search?type=track&limit=8&q=${encodeURIComponent(query)}`
+
+    let res = await fetch(searchUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+      next: { revalidate: 300 },
+    })
+
+    if (res.status === 401) {
+      tokenCache = null
+      const freshToken = await getAccessToken()
+      res = await fetch(searchUrl, {
+        headers: { Authorization: `Bearer ${freshToken}` },
+        next: { revalidate: 300 },
+      })
+    }
+
+    if (res.status === 429) {
+      const retryAfter = res.headers.get("Retry-After") ?? "10"
+      return Response.json(
+        { error: "rate_limited", retryAfter: parseInt(retryAfter) },
+        { status: 429 }
+      )
+    }
 
     if (!res.ok) {
       return Response.json({ error: "Spotify API error" }, { status: 502 })

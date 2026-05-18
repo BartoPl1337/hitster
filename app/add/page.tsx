@@ -46,8 +46,15 @@ export default function AddPage() {
 
     setIsSearching(true)
     fetch(`/api/spotify/search?q=${encodeURIComponent(debouncedQuery)}`)
-      .then((res) => res.json())
-      .then((data) => {
+      .then(async (res) => {
+        const data = await res.json()
+        if (res.status === 429) {
+          const wait = data.retryAfter ?? 10
+          toast.error(`Zbyt wiele zapytań — poczekaj ${wait} sekund i spróbuj ponownie`)
+          setTracks([])
+          setShowDropdown(false)
+          return
+        }
         setTracks(data.tracks ?? [])
         setShowDropdown(true)
       })
