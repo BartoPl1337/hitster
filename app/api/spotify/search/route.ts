@@ -1,49 +1,5 @@
 import { NextRequest } from "next/server"
-
-interface TokenCache {
-  token: string
-  expiresAt: number
-}
-
-let tokenCache: TokenCache | null = null
-
-async function getAccessToken(): Promise<string> {
-  if (tokenCache && Date.now() < tokenCache.expiresAt) {
-    return tokenCache.token
-  }
-
-  const clientId = process.env.SPOTIFY_CLIENT_ID
-  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET
-
-  if (!clientId || !clientSecret) {
-    throw new Error("Spotify credentials not configured")
-  }
-
-  const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString("base64")
-
-  const res = await fetch("https://accounts.spotify.com/api/token", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${credentials}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: "grant_type=client_credentials",
-    cache: "no-store",
-  })
-
-  if (!res.ok) {
-    throw new Error(`Failed to get Spotify token: ${res.status}`)
-  }
-
-  const data = await res.json()
-
-  tokenCache = {
-    token: data.access_token,
-    expiresAt: Date.now() + (data.expires_in - 60) * 1000,
-  }
-
-  return tokenCache.token
-}
+import { spotifyFetch } from "@/lib/spotify"
 
 export async function GET(request: NextRequest) {
   const query = request.nextUrl.searchParams.get("q")
@@ -53,23 +9,8 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const token = await getAccessToken()
-
     const searchUrl = `https://api.spotify.com/v1/search?type=track&limit=8&q=${encodeURIComponent(query)}`
-
-    let res = await fetch(searchUrl, {
-      headers: { Authorization: `Bearer ${token}` },
-      next: { revalidate: 300 },
-    })
-
-    if (res.status === 401) {
-      tokenCache = null
-      const freshToken = await getAccessToken()
-      res = await fetch(searchUrl, {
-        headers: { Authorization: `Bearer ${freshToken}` },
-        next: { revalidate: 300 },
-      })
-    }
+    const res = await spotifyFetch(searchUrl, { next: { revalidate: 300 } })
 
     if (res.status === 429) {
       const retryAfter = res.headers.get("Retry-After") ?? "10"
@@ -86,16 +27,52 @@ export async function GET(request: NextRequest) {
     const data = await res.json()
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tracks = data.tracks.items.map((item: any) => ({
-      id: item.id,
-      title: item.name,
-      artist: item.artists.map((a: { name: string }) => a.name).join(", "),
-      year: item.album.release_date
-        ? parseInt(item.album.release_date.split("-")[0])
-        : null,
-      albumCover:
-        item.album.images[1]?.url ?? item.album.images[0]?.url ?? null,
-    }))
+    const items: any[] = data.tracks?.items ?? []
+
+    const primaryArtistIds = Array.from(
+      new Set(
+        items
+          .map((item) => item.artists?.[0]?.id)
+          .filter((id): id is string => typeof id === "string")
+      )
+    )
+
+    const artistGenres = new Map<string, string[]>()
+
+    if (primaryArtistIds.length > 0) {
+      const idsParam = primaryArtistIds.slice(0, 50).join(",")
+      const artistsRes = await spotifyFetch(
+        `https://api.spotify.com/v1/artists?ids=${idsParam}`,
+        { next: { revalidate: 86400 } }
+      )
+
+      if (artistsRes.ok) {
+        const artistsData = await artistsRes.json()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        for (const artist of artistsData.artists ?? []) {
+          if (artist?.id) {
+            artistGenres.set(artist.id, artist.genres ?? [])
+          }
+        }
+      }
+    }
+
+    const tracks = items.map((item) => {
+      const primaryArtistId: string | undefined = item.artists?.[0]?.id
+      return {
+        id: item.id,
+        title: item.name,
+        artist: item.artists.map((a: { name: string }) => a.name).join(", "),
+        year: item.album.release_date
+          ? parseInt(item.album.release_date.split("-")[0])
+          : null,
+        albumCover:
+          item.album.images[1]?.url ?? item.album.images[0]?.url ?? null,
+        spotifyGenres: primaryArtistId
+          ? artistGenres.get(primaryArtistId) ?? []
+          : [],
+      }
+    })
 
     return Response.json({ tracks })
   } catch (error) {

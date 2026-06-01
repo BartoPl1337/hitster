@@ -210,6 +210,16 @@ async function renderTextFit(text, style, fontFile, maxWidth, minSize = 14) {
     if (result.width <= maxWidth) break;
     size -= 2;
   }
+  // Ostatni ratunek: tekst nadal za szeroki (np. bardzo długa nazwa) — skaluj pikselowo.
+  const hardLimit = Math.min(maxWidth, CARD_PX);
+  if (result && result.width > hardLimit) {
+    const resized = await sharp(result.buf)
+      .resize(hardLimit, null, { fit: 'inside', kernel: 'lanczos3' })
+      .png()
+      .toBuffer();
+    const meta = await sharp(resized).metadata();
+    result = { buf: resized, width: meta.width, height: meta.height };
+  }
   return result;
 }
 
@@ -427,15 +437,56 @@ async function main() {
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-  console.log('→ Pobieram piosenki z Supabase…');
+  // Odczytaj nazwę listy z CLI: --playlist="Nazwa" lub --playlist=Nazwa.
+  // Domyślnie bierzemy pierwszą listę (alfabetycznie), żeby setup po
+  // migracji ("Główna") działał bez argumentów.
+  const playlistArg = process.argv
+    .slice(2)
+    .find((a) => a.startsWith('--playlist='))
+    ?.slice('--playlist='.length)
+    ?.replace(/^["']|["']$/g, '');
+
+  console.log('→ Pobieram listę z Supabase…');
+  const { data: playlists, error: plErr } = await supabase
+    .from('playlists')
+    .select('id, name')
+    .order('created_at', { ascending: true });
+
+  if (plErr) throw plErr;
+  if (!playlists || playlists.length === 0) {
+    console.log('Brak list w bazie — najpierw utwórz listę w aplikacji.');
+    return;
+  }
+
+  let playlist;
+  if (playlistArg) {
+    playlist = playlists.find(
+      (p) => p.name.toLowerCase() === playlistArg.toLowerCase(),
+    );
+    if (!playlist) {
+      console.log(`Nie znaleziono listy "${playlistArg}". Dostępne:`);
+      for (const p of playlists) console.log(`  • ${p.name}`);
+      return;
+    }
+  } else {
+    playlist = playlists[0];
+    if (playlists.length > 1) {
+      console.log(
+        `(Wybrano pierwszą listę: "${playlist.name}". Użyj --playlist="Inna" aby wybrać inną.)`,
+      );
+    }
+  }
+
+  console.log(`→ Pobieram piosenki z listy "${playlist.name}"…`);
   const { data: songs, error } = await supabase
     .from('songs')
     .select('*')
+    .eq('playlist_id', playlist.id)
     .order('added_at', { ascending: true });
 
   if (error) throw error;
   if (!songs || songs.length === 0) {
-    console.log('Brak piosenek w bazie — nie mam z czego generować kart.');
+    console.log('Brak piosenek na tej liście — nie mam z czego generować kart.');
     return;
   }
 
@@ -455,8 +506,17 @@ async function main() {
     cards.push({ front, back, label });
   }
 
-  const singlesPath = path.join(OUTPUT_DIR, 'hitster-print-SINGLES.pdf');
-  const sheetPath   = path.join(OUTPUT_DIR, 'hitster-print-SHEET.pdf');
+  // Slug nazwy listy do nazwy pliku, żeby nie nadpisywać PDF-ów między listami.
+  const polishMap = { ą: 'a', ć: 'c', ę: 'e', ł: 'l', ń: 'n', ó: 'o', ś: 's', ź: 'z', ż: 'z' };
+  const slug = playlist.name
+    .toLowerCase()
+    .replace(/[ąćęłńóśźż]/g, (ch) => polishMap[ch] ?? ch)
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'lista';
+  const singlesPath = path.join(OUTPUT_DIR, `hitster-print-SINGLES-${slug}.pdf`);
+  const sheetPath   = path.join(OUTPUT_DIR, `hitster-print-SHEET-${slug}.pdf`);
 
   console.log('\n→ Składam SINGLES PDF…');
   await writeSinglesPdf(cards, singlesPath);

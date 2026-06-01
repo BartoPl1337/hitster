@@ -1,17 +1,28 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import Link from "next/link"
 import { useSearchParams } from "next/navigation"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
-import { Copy, RotateCcw, Eye, EyeOff } from "lucide-react"
+import {
+  RotateCcw,
+  Eye,
+  EyeOff,
+  ArrowLeft,
+  Download,
+  Upload,
+  X,
+  Loader2,
+  Check,
+  CloudOff,
+} from "lucide-react"
 import { CardCanvas, type CardCanvasSong } from "@/components/card-canvas"
 import {
   CARD_SIZE,
   DEFAULT_STYLE,
-  STORAGE_KEY,
   type CardStyle,
   type TextStyle,
 } from "@/lib/card-style"
@@ -23,15 +34,59 @@ export type PreviewSong = CardCanvasSong & {
 
 type Element = "artist" | "year" | "title" | "cardNumber" | "qr"
 
-export function CardPreviewClient({ songs }: { songs: PreviewSong[] }) {
+type SaveStatus = "idle" | "saving" | "saved" | "error"
+
+function mergeStyle(saved: unknown): CardStyle {
+  if (!saved || typeof saved !== "object") return DEFAULT_STYLE
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const s = saved as any
+  return {
+    artist: { ...DEFAULT_STYLE.artist, ...(s.artist ?? {}) },
+    year: { ...DEFAULT_STYLE.year, ...(s.year ?? {}) },
+    title: { ...DEFAULT_STYLE.title, ...(s.title ?? {}) },
+    cardNumber: { ...DEFAULT_STYLE.cardNumber, ...(s.cardNumber ?? {}) },
+    qr: { ...DEFAULT_STYLE.qr, ...(s.qr ?? {}) },
+  }
+}
+
+export function CardPreviewClient({
+  songs,
+  playlistName,
+  playlistId,
+  initialStyle,
+  initialTemplateFrontUrl,
+  initialTemplateBackUrl,
+}: {
+  songs: PreviewSong[]
+  playlistName?: string
+  playlistId?: string
+  initialStyle?: unknown
+  initialTemplateFrontUrl?: string | null
+  initialTemplateBackUrl?: string | null
+}) {
   const searchParams = useSearchParams()
   const initialSongId = searchParams.get("song")
 
-  const [style, setStyle] = useState<CardStyle>(DEFAULT_STYLE)
+  const [style, setStyle] = useState<CardStyle>(() => mergeStyle(initialStyle))
   const [side, setSide] = useState<"front" | "back">("front")
-  const [scale, setScale] = useState(0.6)
+  // scale: "fit" = auto do szerokości kontenera, lub liczba 0..1.
+  const [scale, setScale] = useState<"fit" | number>("fit")
   const [showGuides, setShowGuides] = useState(false)
   const [element, setElement] = useState<Element>("year")
+  const canvasFrameRef = useRef<HTMLDivElement>(null)
+  const [frameWidth, setFrameWidth] = useState(0)
+  const [templateFrontUrl, setTemplateFrontUrl] = useState<string | null>(
+    initialTemplateFrontUrl ?? null
+  )
+  const [templateBackUrl, setTemplateBackUrl] = useState<string | null>(
+    initialTemplateBackUrl ?? null
+  )
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle")
+  const [uploadingFront, setUploadingFront] = useState(false)
+  const [uploadingBack, setUploadingBack] = useState(false)
+  const [downloadingLayout, setDownloadingLayout] = useState<
+    "sheet" | "singles" | null
+  >(null)
 
   const [songIndex, setSongIndex] = useState(() => {
     if (!songs.length) return 0
@@ -42,58 +97,183 @@ export function CardPreviewClient({ songs }: { songs: PreviewSong[] }) {
     return 0
   })
 
-  // Wczytaj zapisany styl z localStorage (raz, po mount).
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      if (raw) {
-        const parsed = JSON.parse(raw) as CardStyle
-        setStyle({ ...DEFAULT_STYLE, ...parsed })
-      }
-    } catch {
-      /* ignore */
-    }
+  // Synchroniczny pomiar przed paintem — żeby nie było błysku z domyślną skalą
+  // przy pierwszym renderze, zwłaszcza na mobile.
+  useLayoutEffect(() => {
+    const el = canvasFrameRef.current
+    if (el) setFrameWidth(el.getBoundingClientRect().width)
   }, [])
 
-  // Zapisuj zmiany.
+  // ResizeObserver dla zmian szerokości (obrót ekranu, resize okna).
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(style))
-    } catch {
-      /* ignore */
+    const el = canvasFrameRef.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setFrameWidth(entry.contentRect.width)
+      }
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const effectiveScale =
+    scale === "fit"
+      ? frameWidth > 0
+        ? Math.min(1, frameWidth / CARD_SIZE)
+        : 0.6
+      : scale
+
+  // Auto-save style do API z debounce. Pomijamy pierwszy render — initial
+  // wartość już jest na backendzie.
+  const isFirstSave = useRef(true)
+  useEffect(() => {
+    if (!playlistId) return
+    if (isFirstSave.current) {
+      isFirstSave.current = false
+      return
     }
-  }, [style])
+
+    setSaveStatus("saving")
+    const timer = setTimeout(() => {
+      fetch(`/api/playlists/${playlistId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cardStyle: style }),
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error(String(res.status))
+          setSaveStatus("saved")
+          setTimeout(() => setSaveStatus("idle"), 1500)
+        })
+        .catch(() => {
+          setSaveStatus("error")
+        })
+    }, 600)
+
+    return () => clearTimeout(timer)
+  }, [style, playlistId])
 
   const currentSong = songs[songIndex]
   const cardNumber = songIndex + 1
 
   function patch<K extends keyof CardStyle>(
     key: K,
-    next: Partial<CardStyle[K]>,
+    next: Partial<CardStyle[K]>
   ) {
     setStyle((prev) => ({ ...prev, [key]: { ...prev[key], ...next } }))
   }
 
   function resetAll() {
+    if (!confirm("Przywrócić wszystkie ustawienia stylu do domyślnych?")) return
     setStyle(DEFAULT_STYLE)
     toast.success("Przywrócono ustawienia domyślne")
   }
 
-  async function copyExport() {
-    const snippet = buildExportSnippet(style)
+  async function uploadTemplate(file: File, which: "front" | "back") {
+    if (!playlistId) return
+    const setUploading = which === "front" ? setUploadingFront : setUploadingBack
+    const setUrl = which === "front" ? setTemplateFrontUrl : setTemplateBackUrl
+    setUploading(true)
     try {
-      await navigator.clipboard.writeText(snippet)
-      toast.success("Snippet skopiowany — wklej do generate.js")
+      const formData = new FormData()
+      formData.append("file", file)
+      formData.append("side", which)
+      const res = await fetch(`/api/playlists/${playlistId}/template`, {
+        method: "POST",
+        body: formData,
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        toast.error(data.error ?? "Błąd uploadu")
+        return
+      }
+      setUrl(data.publicUrl)
+      toast.success(`Wgrano szablon (${which === "front" ? "przód" : "tył"})`)
     } catch {
-      toast.error("Nie udało się skopiować")
+      toast.error("Nie udało się wgrać szablonu")
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  async function clearTemplate(which: "front" | "back") {
+    if (!playlistId) return
+    if (
+      !confirm(
+        `Usunąć wgrany szablon (${which === "front" ? "przód" : "tył"}) i wrócić do domyślnego?`
+      )
+    ) {
+      return
+    }
+    try {
+      const res = await fetch(
+        `/api/playlists/${playlistId}/template?side=${which}`,
+        { method: "DELETE" }
+      )
+      if (!res.ok) {
+        toast.error("Nie udało się usunąć szablonu")
+        return
+      }
+      if (which === "front") setTemplateFrontUrl(null)
+      else setTemplateBackUrl(null)
+      toast.success("Szablon usunięty")
+    } catch {
+      toast.error("Wystąpił błąd")
+    }
+  }
+
+  async function downloadPdf(layout: "sheet" | "singles") {
+    if (!playlistId) return
+    setDownloadingLayout(layout)
+    try {
+      const res = await fetch(
+        `/api/playlists/${playlistId}/generate?layout=${layout}`
+      )
+      if (!res.ok) {
+        const ct = res.headers.get("content-type") ?? ""
+        const msg = ct.includes("json")
+          ? (await res.json()).error
+          : "Nie udało się wygenerować PDF"
+        toast.error(msg)
+        return
+      }
+      const blob = await res.blob()
+      const disposition = res.headers.get("content-disposition") ?? ""
+      const match = disposition.match(/filename="([^"]+)"/)
+      const filename = match?.[1] ?? `hitster-${layout}.pdf`
+
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      toast.success(`Pobrano ${filename}`)
+    } catch {
+      toast.error("Nie udało się pobrać PDF")
+    } finally {
+      setDownloadingLayout(null)
     }
   }
 
   if (songs.length === 0) {
     return (
       <main className="mx-auto max-w-5xl px-4 py-10">
+        {playlistId && (
+          <Link
+            href="/preview"
+            className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <ArrowLeft className="size-4" />
+            Wybierz inną listę
+          </Link>
+        )}
         <p className="text-muted-foreground">
-          Brak piosenek w bazie — najpierw dodaj kilka, żeby było co podglądać.
+          Brak piosenek na tej liście — najpierw dodaj kilka, żeby było co
+          podglądać.
         </p>
       </main>
     )
@@ -101,8 +281,28 @@ export function CardPreviewClient({ songs }: { songs: PreviewSong[] }) {
 
   return (
     <main className="mx-auto max-w-7xl px-4 py-6">
+      {playlistId && (
+        <Link
+          href="/preview"
+          className="mb-3 inline-flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ArrowLeft className="size-4" />
+          Wybierz inną listę
+        </Link>
+      )}
       <header className="mb-4 flex flex-wrap items-center gap-2">
-        <h1 className="mr-4 text-2xl font-bold">Podgląd karty</h1>
+        <div className="mr-4">
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold">Podgląd karty</h1>
+            <SaveBadge status={saveStatus} />
+          </div>
+          {playlistName && (
+            <p className="text-sm text-muted-foreground">
+              Lista:{" "}
+              <span className="font-medium text-foreground">{playlistName}</span>
+            </p>
+          )}
+        </div>
 
         <SegBar
           options={[
@@ -115,8 +315,8 @@ export function CardPreviewClient({ songs }: { songs: PreviewSong[] }) {
 
         <SegBar
           options={[
+            { value: "fit", label: "Auto" },
             { value: 0.5, label: "50%" },
-            { value: 0.6, label: "60%" },
             { value: 0.75, label: "75%" },
             { value: 1, label: "100%" },
           ]}
@@ -129,18 +329,57 @@ export function CardPreviewClient({ songs }: { songs: PreviewSong[] }) {
           size="sm"
           onClick={() => setShowGuides((g) => !g)}
         >
-          {showGuides ? <EyeOff className="mr-1 size-4" /> : <Eye className="mr-1 size-4" />}
-          Linie pomocnicze
+          {showGuides ? (
+            <EyeOff className="mr-1 size-4" />
+          ) : (
+            <Eye className="mr-1 size-4" />
+          )}
+          Linie
         </Button>
 
-        <div className="ml-auto flex gap-2">
+        <TemplateButton
+          side="front"
+          url={templateFrontUrl}
+          uploading={uploadingFront}
+          onUpload={(f) => uploadTemplate(f, "front")}
+          onClear={() => clearTemplate("front")}
+        />
+        <TemplateButton
+          side="back"
+          url={templateBackUrl}
+          uploading={uploadingBack}
+          onUpload={(f) => uploadTemplate(f, "back")}
+          onClear={() => clearTemplate("back")}
+        />
+
+        <div className="ml-auto flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={resetAll}>
             <RotateCcw className="mr-1 size-4" />
-            Reset
+            Reset stylu
           </Button>
-          <Button size="sm" onClick={copyExport}>
-            <Copy className="mr-1 size-4" />
-            Eksportuj do generate.js
+          <Button
+            size="sm"
+            onClick={() => downloadPdf("singles")}
+            disabled={downloadingLayout !== null}
+          >
+            {downloadingLayout === "singles" ? (
+              <Loader2 className="mr-1 size-4 animate-spin" />
+            ) : (
+              <Download className="mr-1 size-4" />
+            )}
+            Pojedyncze karty
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => downloadPdf("sheet")}
+            disabled={downloadingLayout !== null}
+          >
+            {downloadingLayout === "sheet" ? (
+              <Loader2 className="mr-1 size-4 animate-spin" />
+            ) : (
+              <Download className="mr-1 size-4" />
+            )}
+            Arkusze A4
           </Button>
         </div>
       </header>
@@ -150,7 +389,7 @@ export function CardPreviewClient({ songs }: { songs: PreviewSong[] }) {
         <select
           value={songIndex}
           onChange={(e) => setSongIndex(Number(e.target.value))}
-          className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+          className="min-w-0 max-w-full flex-1 rounded-md border border-input bg-background px-2 py-1 text-sm sm:flex-initial"
         >
           {songs.map((s, i) => (
             <option key={s.id} value={i}>
@@ -161,22 +400,35 @@ export function CardPreviewClient({ songs }: { songs: PreviewSong[] }) {
         </select>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[1fr_360px]">
+      <div className="grid grid-cols-2 gap-6">
         {/* Canvas */}
         <Card className="overflow-auto">
-          <CardContent className="flex items-center justify-center p-6">
-            {currentSong && (
-              <div className="relative" style={{ width: CARD_SIZE * scale, height: CARD_SIZE * scale }}>
-                <CardCanvas
-                  song={currentSong}
-                  cardNumber={cardNumber}
-                  side={side}
-                  style={style}
-                  scale={scale}
-                  showGuides={showGuides}
-                />
-              </div>
-            )}
+          <CardContent className="p-3 sm:p-6">
+            <div
+              ref={canvasFrameRef}
+              className="mx-auto flex w-full justify-center"
+            >
+              {currentSong && (
+                <div
+                  className="relative"
+                  style={{
+                    width: CARD_SIZE * effectiveScale,
+                    height: CARD_SIZE * effectiveScale,
+                  }}
+                >
+                  <CardCanvas
+                    song={currentSong}
+                    cardNumber={cardNumber}
+                    side={side}
+                    style={style}
+                    scale={effectiveScale}
+                    showGuides={showGuides}
+                    templateFrontUrl={templateFrontUrl}
+                    templateBackUrl={templateBackUrl}
+                  />
+                </div>
+              )}
+            </div>
           </CardContent>
         </Card>
 
@@ -248,14 +500,18 @@ export function CardPreviewClient({ songs }: { songs: PreviewSong[] }) {
                     value={style.cardNumber.rightPadding}
                     min={0}
                     max={120}
-                    onChange={(v) => patch("cardNumber", { rightPadding: v })}
+                    onChange={(v) =>
+                      patch("cardNumber", { rightPadding: v })
+                    }
                   />
                   <NumberRow
                     label="Bottom padding"
                     value={style.cardNumber.bottomPadding}
                     min={0}
                     max={120}
-                    onChange={(v) => patch("cardNumber", { bottomPadding: v })}
+                    onChange={(v) =>
+                      patch("cardNumber", { bottomPadding: v })
+                    }
                   />
                 </>
               )}
@@ -288,10 +544,8 @@ export function CardPreviewClient({ songs }: { songs: PreviewSong[] }) {
           </Card>
 
           <p className="text-xs text-muted-foreground">
-            Wszystkie zmiany zapisują się automatycznie w przeglądarce
-            (localStorage). „Eksportuj do generate.js" kopiuje gotowy
-            snippet do schowka — wklej go do <code>generate.js</code>
-            i odpal <code>bun run generate.js</code>.
+            Zmiany stylu zapisują się automatycznie do listy.
+            &bdquo;Pobierz&rdquo; generuje PDF z aktualnym stylem i szablonem.
           </p>
         </div>
       </div>
@@ -302,6 +556,101 @@ export function CardPreviewClient({ songs }: { songs: PreviewSong[] }) {
 // =====================================================================
 // Pod-komponenty
 // =====================================================================
+
+function SaveBadge({ status }: { status: SaveStatus }) {
+  if (status === "idle") return null
+  if (status === "saving") {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+        <Loader2 className="size-3 animate-spin" />
+        Zapisywanie…
+      </span>
+    )
+  }
+  if (status === "saved") {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-green-600">
+        <Check className="size-3" />
+        Zapisano
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-destructive">
+      <CloudOff className="size-3" />
+      Błąd zapisu
+    </span>
+  )
+}
+
+function TemplateButton({
+  side,
+  url,
+  uploading,
+  onUpload,
+  onClear,
+}: {
+  side: "front" | "back"
+  url: string | null
+  uploading: boolean
+  onUpload: (file: File) => void
+  onClear: () => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const label = side === "front" ? "Przód" : "Tył"
+  const hasCustom = !!url
+
+  return (
+    <div className="inline-flex items-center">
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (f) onUpload(f)
+          e.target.value = ""
+        }}
+      />
+      <Button
+        variant={hasCustom ? "secondary" : "outline"}
+        size="sm"
+        onClick={() => inputRef.current?.click()}
+        disabled={uploading}
+        className={hasCustom ? "rounded-r-none border-r-0" : ""}
+        title={
+          hasCustom
+            ? `Własny szablon (${label.toLowerCase()}) — kliknij, by podmienić`
+            : `Wgraj własny ${label.toLowerCase()}`
+        }
+      >
+        {uploading ? (
+          <Loader2 className="mr-1 size-4 animate-spin" />
+        ) : (
+          <Upload className="mr-1 size-4" />
+        )}
+        {label}
+        {hasCustom && !uploading && (
+          <span className="ml-1.5 inline-block size-1.5 rounded-full bg-primary" />
+        )}
+      </Button>
+      {hasCustom && (
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={onClear}
+          disabled={uploading}
+          aria-label={`Usuń własny ${label.toLowerCase()}`}
+          title={`Wróć do domyślnego (${label.toLowerCase()})`}
+          className="rounded-l-none border-l border-border px-2"
+        >
+          <X className="size-3.5" />
+        </Button>
+      )}
+    </div>
+  )
+}
 
 function TextControls<T extends TextStyle & { centerY?: number }>({
   style,
@@ -495,61 +844,4 @@ function SegBar<T extends string | number>({
       ))}
     </div>
   )
-}
-
-// =====================================================================
-// Export snippetu do generate.js
-// =====================================================================
-
-function buildExportSnippet(s: CardStyle): string {
-  const j = (v: unknown) => JSON.stringify(v)
-  return `// ↓ Wklej w generate.js zastępując obecny obiekt STYLE oraz stałe
-// FRONT_ARTIST_Y / FRONT_YEAR_Y / FRONT_TITLE_Y / QR_CENTER_X / QR_CENTER_Y / QR_SIZE.
-
-const STYLE = {
-  artist: {
-    family: ${j(s.artist.family)},
-    weight: ${s.artist.weight},
-    sizePx: ${s.artist.sizePx},
-    color: ${j(s.artist.color)},
-    letterSpacingPx: ${s.artist.letterSpacingPx},
-  },
-  year: {
-    family: ${j(s.year.family)},
-    weight: ${s.year.weight},
-    sizePx: ${s.year.sizePx},
-    color: ${j(s.year.color)},
-    letterSpacingPx: ${s.year.letterSpacingPx},
-    maxWidth: ${s.year.maxWidth},
-    maxHeight: ${s.year.maxHeight},
-  },
-  title: {
-    family: ${j(s.title.family)},
-    weight: ${s.title.weight},
-    sizePx: ${s.title.sizePx},
-    color: ${j(s.title.color)},
-    letterSpacingPx: ${s.title.letterSpacingPx},
-  },
-  cardNumber: {
-    family: ${j(s.cardNumber.family)},
-    weight: ${s.cardNumber.weight},
-    sizePx: ${s.cardNumber.sizePx},
-    color: ${j(s.cardNumber.color)},
-    letterSpacingPx: ${s.cardNumber.letterSpacingPx},
-  },
-};
-
-const FRONT_CENTER_X = 419;
-const FRONT_ARTIST_Y = ${s.artist.centerY};
-const FRONT_YEAR_Y   = ${s.year.centerY};
-const FRONT_TITLE_Y  = ${s.title.centerY};
-
-const QR_CENTER_X = ${s.qr.centerX};
-const QR_CENTER_Y = ${s.qr.centerY};
-const QR_SIZE     = ${s.qr.size};
-
-// Numer karty pozycjonowany przez paddingi (right/bottom):
-//   right: ${s.cardNumber.rightPadding}
-//   bottom: ${s.cardNumber.bottomPadding}
-`
 }

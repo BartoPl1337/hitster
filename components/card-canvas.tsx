@@ -20,10 +20,13 @@ type Props = {
   scale?: number
   /** Pokaż linie pomocnicze (max-w/max-h dla roku, środki tekstów). */
   showGuides?: boolean
+  /** URL-e custom szablonów (np. z Supabase Storage). Gdy brak — fallback do domyślnych. */
+  templateFrontUrl?: string | null
+  templateBackUrl?: string | null
 }
 
-const TEMPLATE_FRONT = "/templates/vinyl-001-front.png"
-const TEMPLATE_BACK = "/templates/vinyl-001-back.png"
+const DEFAULT_TEMPLATE_FRONT = "/templates/vinyl-001-front.png"
+const DEFAULT_TEMPLATE_BACK = "/templates/vinyl-001-back.png"
 
 export function CardCanvas({
   song,
@@ -32,15 +35,22 @@ export function CardCanvas({
   style,
   scale = 1,
   showGuides = false,
+  templateFrontUrl,
+  templateBackUrl,
 }: Props) {
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
 
   useEffect(() => {
-    if (side !== "back" || !song.spotify_track_id) {
-      setQrDataUrl(null)
-      return
-    }
     let cancelled = false
+    if (side !== "back" || !song.spotify_track_id) {
+      // Reset asynchronicznie, żeby uniknąć cascading-render lint w React 19.
+      queueMicrotask(() => {
+        if (!cancelled) setQrDataUrl(null)
+      })
+      return () => {
+        cancelled = true
+      }
+    }
     QRCode.toDataURL(
       `https://open.spotify.com/track/${song.spotify_track_id}`,
       {
@@ -80,7 +90,11 @@ export function CardCanvas({
     <div style={outerStyle} className="relative">
       <div style={wrapperStyle} className="relative select-none">
         <img
-          src={side === "front" ? TEMPLATE_FRONT : TEMPLATE_BACK}
+          src={
+            side === "front"
+              ? templateFrontUrl ?? DEFAULT_TEMPLATE_FRONT
+              : templateBackUrl ?? DEFAULT_TEMPLATE_BACK
+          }
           alt=""
           width={CARD_SIZE}
           height={CARD_SIZE}
